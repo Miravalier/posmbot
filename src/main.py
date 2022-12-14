@@ -102,8 +102,27 @@ last_message_time = datetime.datetime.now()
 
 async def on_message(msg: ChatMessage):
     global last_message_time
-    print(f'[Msg] In channel "{msg.room.name}", user "{msg.user.name}" said: "{msg.text}"')
-    text = msg.text.lower()
+    if msg is None:
+        return
+
+    if msg.room is not None:
+        room = msg.room.name
+    else:
+        room = "DM"
+
+    if msg.user is not None:
+        user = msg.user.name
+    else:
+        user = "<None>"
+
+    if msg.text:
+        text = msg.text
+    else:
+        text = ""
+
+    print(f'[Msg] In channel "{room}", user "{user}" said: "{text}"')
+
+    text = text.lower()
     current_time = datetime.datetime.now()
     if ("posm" in text or "possum" in text) and current_time > last_message_time + datetime.timedelta(seconds=10):
         await msg.chat.send_message(TWITCH_CHANNEL, ":V")
@@ -111,7 +130,7 @@ async def on_message(msg: ChatMessage):
 
 
 async def on_sub(sub: ChatSub):
-    print(f'[Sub] In channel {sub.room.name}, Type: {sub.sub_plan}, Message: {sub.sub_message}')
+    print(f'[Sub] In channel')
 
 
 async def setup():
