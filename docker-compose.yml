@@ -1,0 +1,21 @@
+version: "3.5"
+
+networks:
+    posmbot:
+        external: false
+
+services:
+    server:
+        build: .
+        container_name: posmbot
+        networks:
+            - posmbot
+        volumes:
+            - /var/posmbot:/data
+        environment:
+            - TWITTER_API_KEY=${TWITTER_API_KEY}
+            - TWITTER_API_KEY_SECRET=${TWITTER_API_KEY_SECRET}
+            - TWITTER_BEARER_TOKEN=${TWITTER_BEARER_TOKEN}
+            - TWITCH_CLIENT_ID=${TWITCH_CLIENT_ID}
+            - TWITCH_SECRET=${TWITCH_SECRET}
+            - TWITCH_CHANNEL=${TWITCH_CHANNEL}
