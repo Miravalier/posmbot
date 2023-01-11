@@ -13,6 +13,7 @@ services:
         volumes:
             - /var/posmbot:/data
         environment:
+            - ADMINS=${ADMINS}
             - TWITTER_API_KEY=${TWITTER_API_KEY}
             - TWITTER_API_KEY_SECRET=${TWITTER_API_KEY_SECRET}
             - TWITTER_BEARER_TOKEN=${TWITTER_BEARER_TOKEN}

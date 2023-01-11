@@ -3,6 +3,7 @@ import asyncio
 import datetime
 import os
 import requests
+from dataclasses import dataclass, field
 from database import db
 from functools import partial
 from twitchAPI import Twitch
@@ -10,7 +11,7 @@ from twitchAPI.oauth import refresh_access_token
 from twitchAPI.types import AuthScope, ChatEvent
 from twitchAPI.chat import Chat, EventData, ChatMessage, ChatSub
 
-
+ADMINS = [admin.strip().lower() for admin in os.environ.get("ADMINS").split(",")]
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "")
 TWITCH_SECRET = os.environ.get("TWITCH_SECRET", "")
 TWITCH_CHANNEL = os.environ.get("TWITCH_CHANNEL", "")
@@ -19,6 +20,21 @@ TWITCH_USER_SCOPE = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT]
 TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN", "")
 TWEETS_URL = "https://api.twitter.com/2/users/{id}/tweets"
 POSSUM_EVERY_HOUR_USER_ID = 1022089486849765376
+
+
+@dataclass
+class Timer:
+    interval: int = 10 # In seconds
+    last_event: datetime = field(default_factory=datetime.datetime.now)
+
+    @property
+    def ready(self):
+        now = datetime.datetime.now()
+        if now > self.last_event + datetime.timedelta(seconds=10):
+            self.last_event = now
+            return True
+        else:
+            return False
 
 
 def twitter_auth(r):
@@ -98,17 +114,11 @@ async def on_ready(ready_event: asyncio.Event, loop: asyncio.AbstractEventLoop, 
     loop.call_soon_threadsafe(ready_event.set)
 
 
-last_message_time = datetime.datetime.now()
+posm_reply_timer = Timer(10)
 
 async def on_message(msg: ChatMessage):
-    global last_message_time
     if msg is None:
         return
-
-    if msg.room is not None:
-        room = msg.room.name
-    else:
-        room = "DM"
 
     if msg.user is not None:
         user = msg.user.name
@@ -120,13 +130,20 @@ async def on_message(msg: ChatMessage):
     else:
         text = ""
 
-    print(f'[Msg] In channel "{room}", user "{user}" said: "{text}"')
+    print(f'[Msg] User "{user}" said: "{text}"')
 
-    text = text.lower()
-    current_time = datetime.datetime.now()
-    if ("posm" in text or "possum" in text) and current_time > last_message_time + datetime.timedelta(seconds=10):
+    lower_text = text.lower()
+
+    # Check for ! commands
+    if user in ADMINS:
+        if lower_text.startswith("!posmtest"):
+            await msg.chat.send_message(TWITCH_CHANNEL, "rebeck6YEE")
+            return
+
+    # Check for periodic :V
+    if ("posm" in lower_text or "possum" in lower_text) and posm_reply_timer.ready:
         await msg.chat.send_message(TWITCH_CHANNEL, ":V")
-        last_message_time = current_time
+        return
 
 
 async def on_sub(sub: ChatSub):
