@@ -97,10 +97,13 @@ async def main(ready_event: asyncio.Event, chat: Chat):
         while (possum_url := get_newest_possum()) is None:
             await asyncio.sleep(300)
         # Send a chat message
-        await chat.send_message(
-            TWITCH_CHANNEL,
-            f"New possum just dropped! {possum_url} (via: @PossumEveryHour)"
-        )
+        try:
+            await chat.send_message(
+                TWITCH_CHANNEL,
+                f"New possum just dropped! {possum_url} (via: @PossumEveryHour)"
+            )
+        except:
+            print("[!] Failed to send new possum update")
 
 
 async def on_ready(ready_event: asyncio.Event, loop: asyncio.AbstractEventLoop, event_data: EventData):
@@ -132,13 +135,19 @@ async def on_message(msg: ChatMessage):
 
     # Check for ! commands
     if user in ADMINS:
-        if lower_text.startswith("!posmtest"):
-            await msg.chat.send_message(TWITCH_CHANNEL, "rebeck6YEE")
+        if lower_text.startswith("!ye"):
+            try:
+                await msg.chat.send_message(TWITCH_CHANNEL, "rebeck6YEE")
+            except:
+                print("[!] Failed to send rebeck6YEE")
             return
 
     # Check for periodic :V
     if ("posm" in lower_text or "possum" in lower_text) and posm_reply_timer.ready:
-        await msg.chat.send_message(TWITCH_CHANNEL, ":V")
+        try:
+            await msg.chat.send_message(TWITCH_CHANNEL, ":V")
+        except:
+            print("[!] Failed to send :V")
         return
 
 
