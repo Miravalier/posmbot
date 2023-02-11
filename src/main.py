@@ -6,6 +6,7 @@ import requests
 from dataclasses import dataclass, field
 from database import db
 from functools import partial
+from pprint import pprint
 from twitchAPI import Twitch
 from twitchAPI.oauth import refresh_access_token
 from twitchAPI.types import AuthScope, ChatEvent
@@ -17,9 +18,8 @@ TWITCH_SECRET = os.environ.get("TWITCH_SECRET", "")
 TWITCH_CHANNEL = os.environ.get("TWITCH_CHANNEL", "")
 TWITCH_USER_SCOPE = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT]
 
-TWITTER_BEARER_TOKEN = os.environ.get("TWITTER_BEARER_TOKEN", "")
-TWEETS_URL = "https://api.twitter.com/2/users/{id}/tweets"
-POSSUM_EVERY_HOUR_USER_ID = 1022089486849765376
+MASTODON_URL = "https://botsin.space"
+POSSUM_EVERY_HOUR_USER_ID = 109536299782193051
 
 
 @dataclass
@@ -37,49 +37,45 @@ class Timer:
             return False
 
 
-def twitter_auth(r):
-    r.headers["Authorization"] = f"Bearer {TWITTER_BEARER_TOKEN}"
-    r.headers["User-Agent"] = "PythonMiravalierBot"
+def mastodon_auth(r):
+    r.headers["User-Agent"] = "PythonBot"
     return r
 
 
+def search_mastodon_user_id(username: str):
+    search_url = MASTODON_URL + "/api/v2/search?q={}"
+
+    response = requests.get(search_url.format(username))
+    if response.status_code != 200:
+        print(response.status_code, response.content)
+    else:
+        pprint(response.json())
+
+
 def get_newest_possum() -> str:
-    query_params = {
-            "exclude": "retweets,replies",
-            "expansions": "attachments.media_keys",
-            "media.fields": "url",
-    }
-    if db.most_recent_tweet_id:
-        query_params["since_id"] = db.most_recent_tweet_id
+    statuses_url = MASTODON_URL + "/api/v1/accounts/{id}/statuses"
+
+    query_params = {"only_media": True, "limit": 1}
+    if db.most_recent_status_id:
+        query_params["since_id"] = db.most_recent_status_id
 
     response = requests.get(
-        TWEETS_URL.format(id=POSSUM_EVERY_HOUR_USER_ID),
+        statuses_url.format(id=POSSUM_EVERY_HOUR_USER_ID),
         params=query_params,
-        auth=twitter_auth,
-    ).json()
-
-    if response.get('meta', {}).get("result_count", 0) == 0:
-        return None
-
-    image_urls_by_media_key = {
-        item["media_key"]: item["url"]
-        for item in response.get("includes", {}).get("media", [])
-        if item["type"] == "photo"
-    }
-    if len(image_urls_by_media_key) == 0:
-        return None
-
-    tweets_with_images = [
-        item for item in response["data"]
-        if (media_keys := item.get("attachments", {}).get("media_keys", []))
-        and media_keys[0] in image_urls_by_media_key
-    ]
-    newest_tweet_with_image = max(
-        tweets_with_images,
-        key=lambda item: int(item["id"])
+        auth=mastodon_auth,
     )
-    db.most_recent_tweet_id = newest_tweet_with_image["id"]
-    newest_image_url = image_urls_by_media_key[newest_tweet_with_image["attachments"]["media_keys"][0]]
+
+    if response.status_code != 200:
+        print("API Error:", response.content)
+        return None
+
+    statuses = response.json()
+    if len(statuses) == 0:
+        return None
+    status = statuses[0]
+    newest_image_url = status["media_attachments"][0]["url"]
+
+    db.most_recent_status_id = status["id"]
     db.save()
     return newest_image_url
 
