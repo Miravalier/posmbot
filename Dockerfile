@@ -1,6 +1,6 @@
 FROM python:3.10
 ENV PYTHONUNBUFFERED=1
-RUN pip install requests websockets
+RUN pip install aiohttp requests websockets
 
 COPY ./src /app
 WORKDIR /app

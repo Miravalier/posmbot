@@ -6,7 +6,7 @@ import requests
 from dataclasses import dataclass, field
 from database import db
 from pprint import pprint
-from twitchbot import TwitchBot, ChatMessage
+from twitchbot import TwitchBot, ChatMessage, Token
 
 
 TWITCH_BOT_USERNAME = os.environ.get("TWITCH_BOT_USERNAME", "")
@@ -77,7 +77,7 @@ def get_newest_possum() -> str:
 
 class PosmBot(TwitchBot):
     def __init__(self, *args, **kwargs):
-        super.__init__(*args, **kwargs)
+        super().__init__(*args, **kwargs)
         self.posm_reply_timer = Timer(10)
 
     async def posm_post_worker(self):
@@ -122,7 +122,7 @@ class PosmBot(TwitchBot):
 async def main():
     print("[!] Starting PosmBot")
 
-    bot = await PosmBot.create(TWITCH_BOT_USERNAME, TWITCH_CLIENT_ID)
+    bot = await PosmBot.create(TWITCH_BOT_USERNAME, TWITCH_CLIENT_ID, Token.from_b64(db.base64_token))
     await bot.join(TWITCH_CHANNEL)
     bot.add_task('posm_post', bot.posm_post_worker())
 
