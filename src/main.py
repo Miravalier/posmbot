@@ -104,6 +104,11 @@ class PosmBot(TwitchBot):
                     print("[!] @PossumEveryHour send failed")
                     await asyncio.sleep(5)
 
+    async def on_token_refresh(self, token: Token):
+        await super().on_token_refresh(token)
+        db.base64_token = token.to_b64()
+        db.save()
+
     async def on_channel_message(self, message: ChatMessage):
         await super().on_channel_message(message)
 

@@ -207,6 +207,15 @@ def authorize_chat_bot(client_id: str, client_secret: str, redirect_uri: str = "
     return resolve_token_from_auth_code(client_id, client_secret, code, redirect_uri)
 
 
+def validate_channel(channel: str) -> str:
+    # All twitch channels are lowercase
+    channel = channel.lower()
+    # Twitch channels start with '#'
+    if not channel.startswith("#"):
+        channel = f"#{channel}"
+    return channel
+
+
 @dataclass
 class IRCMessage:
     tags: Dict[str,str]
@@ -222,15 +231,20 @@ class ChatMessage:
     id: str
     text: str
     channel: str
-    user: str
+    user_id: str
+    user_name: str
     is_broadcaster: bool
     is_mod: bool
     is_subscriber: bool
-    is_turbo: bool
+    is_staff: bool
+    is_first_message: bool
+    is_whisper: bool
+    color: str
 
 
 class TwitchBot:
-    COMMAND_PREFIX = "!"
+    debug_irc = False
+    command_prefix = "!"
 
     def __init__(self, client_id: str, client_secret: str, token: Token):
         self.client_id: str = client_id
@@ -239,6 +253,7 @@ class TwitchBot:
         self.websocket: ws.WebSocketClientProtocol = None
         self.background_tasks: dict[str, asyncio.Task] = {}
         self.nonremovable_tasks: Set[asyncio.Task] = set()
+        self.waiting_futures: dict[str, asyncio.Future] = {}
         self.latency: float = None
         self.username: str = None
         self.scopes: List[str] = []
@@ -247,7 +262,7 @@ class TwitchBot:
 
     def add_task(self, name: str, coro: Union[asyncio.Task, Any]) -> asyncio.Task:
         """
-        Add an awaitable to the list of background tasks under a certain name. Adding
+        Add a coro or task to the dict of background tasks under a certain name. Adding
         another task with the same name will cause the first one to be cancelled.
         """
         # Prepare task
@@ -278,14 +293,56 @@ class TwitchBot:
 
     def remove_task(self, name: str):
         """
-        Remove an awaitable added using add_task. Silently ignores names that are not
-        present in the current background tasks.
+        Remove a coro or task added using add_task. Silently ignores names that do
+        not exist or have already been removed.
         """
         task = self.background_tasks.pop(name, None)
-        if task is not None:
+        if task is not None and not task.done():
             task.cancel()
 
-    async def connect(self):
+    def add_future(self, name: str):
+        """
+        Adds an awaitable future to the collection reachable from other callbacks under
+        the given name.
+        """
+        # Prep new future
+        future = asyncio.Future()
+        # Remove any existing future by that name and add the new one
+        self.remove_future(name)
+        self.waiting_futures[name] = future
+        return future
+
+    def resolve_future(self, name: str, result: Any = None):
+        """
+        Finishes the future by returning the given result. Silently ignores names that do
+        not exist or have already been resolved or removed.
+        """
+        self.waiting_futures[name].set_result(result)
+
+    def remove_future(self, name: str):
+        """
+        Finishes the future by raising an asyncio.CancelledError, and removes it from the
+        collection. Silently ignores names that do not exist or have already been resolved
+        or removed.
+        """
+        future = self.waiting_futures.pop(name, None)
+        if future is not None and not future.done():
+            future.set_exception(asyncio.CancelledError("cancelled due to removal"))
+
+    async def wait_for_future(self, name: str, timeout: float):
+        future = self.waiting_futures[name]
+        try:
+            return await asyncio.wait_for(future, timeout)
+        except asyncio.TimeoutError:
+            self.remove_future(name)
+            raise
+
+    async def connect(self, timeout: float = 15.0):
+        """
+        Used internally during create() and the reconnect() handler.
+
+        Call create() instead of calling connect() directly.
+        """
         # Cleanup old ping task
         self.remove_task('ping')
         self.remove_task('dispatch')
@@ -312,34 +369,39 @@ class TwitchBot:
         await self.irc_send('CAP REQ :twitch.tv/membership twitch.tv/tags twitch.tv/commands')
         await self.irc_send(f'PASS oauth:{self.token.current_value}')
         await self.irc_send(f'NICK {self.username}')
-        # Add ping and dispatch tasks
+        # Start a timeout, waiting for the auth success message
+        self.add_future('auth')
+        # Add ping and dispatch tasks, the dispatch task will trigger the
+        # auth future's completion.
         self.add_task('ping', self.ping_worker())
         self.add_task('dispatch', self.dispatch_worker())
+        # Wait for the auth success or timeout, whichever is first
+        await self.wait_for_future('auth', timeout)
 
     async def join(self, *channels: str, timeout: float = 15.0):
+        """
+        Joins any number of twitch channels to begin receiving callbacks
+        related to those channels.
+        """
         proper_channels: List[str] = []
         for channel in channels:
-            # All twitch channels are lowercase
-            channel = channel.lower()
-            # Twitch channels start with '#'
-            if not channel.startswith("#"):
-                channel = f"#{channel}"
-            proper_channels.append(channel)
+            proper_channels.append(validate_channel(channel))
         if not proper_channels:
             raise ValueError("no channels specified to join")
         self.channels.update(proper_channels)
-        # A join response will cancel this timeout worker and resolve this result
-        join_result = asyncio.Future()
-        self.add_task('join', self.timeout_worker(join_result, timeout))
+        # Send a JOIN request to the server, if it fails don't bother
+        # waiting for the join_result
+        self.add_future('join')
         try:
             await self.irc_send(f"JOIN {','.join(proper_channels)}")
         except:
-            self.remove_task('join')
+            self.remove_future('join')
             raise
-        await join_result
+        # Wait for the join success or timeout, whichever is first
+        await self.wait_for_future('join', timeout)
 
     @classmethod
-    async def create(cls, client_id: str, client_secret: str, token: Token):
+    async def create(cls, client_id: str, client_secret: str, token: Token, timeout: float = 15.0):
         """
         Connect to the twitch server and establish background tasks.
 
@@ -348,11 +410,12 @@ class TwitchBot:
         """
         bot = cls(client_id, client_secret, token)
         try:
-            await bot.connect()
+            await bot.connect(timeout)
         except AuthError:
             print("[!] Token invalid or expired, attempting to refresh")
-            await token.refresh()
-            await bot.connect()
+            await token.refresh(client_id, client_secret)
+            await bot.on_token_refresh(token)
+            await bot.connect(timeout)
         return bot
 
     async def run(self):
@@ -389,7 +452,13 @@ class TwitchBot:
         Send a PRIVMSG to the specified channel, causing the bot
         to speak in the chat.
         """
-        await self.irc_send("<TODO>")
+        await self.irc_send(f"PRIVMSG {validate_channel(channel)} :{message}")
+
+    async def reply(self, original_message: ChatMessage, reply: str):
+        """
+        Sends a reply in the chat to a previously sent message.
+        """
+        await self.irc_send(f"@reply-parent-msg-id={original_message.id} PRIVMSG {validate_channel(original_message.channel)} :{reply}")
 
     async def irc_send(self, message: str):
         """
@@ -400,7 +469,11 @@ class TwitchBot:
         await self.websocket.send(message)
 
     def parse_tags(self, raw_tags: str) -> Dict[str, str]:
-        return {}
+        tags = {}
+        for tag_pair in raw_tags.split(';'):
+            key, value = tag_pair.split('=')
+            tags[key] = value
+        return tags
 
     def parse_message(self, raw_message: str) -> IRCMessage:
         index = 0
@@ -504,6 +577,7 @@ class TwitchBot:
                 print("[!] Token invalid or expired, attempting to refresh")
                 try:
                     await self.token.refresh(self.client_id, self.client_secret)
+                    await self.on_token_refresh(self.token)
                     continue
                 except:
                     self.close_from_task('reconnect')
@@ -515,35 +589,91 @@ class TwitchBot:
                 if wait_interval < 256:
                     wait_interval *= 2
 
-    async def timeout_worker(self, future: asyncio.Future, timeout: float):
-        await asyncio.sleep(timeout)
-        future.set_exception(TimeoutError)
-
     ###################
     # Event Callbacks #
     ###################
+
+    async def on_token_refresh(self, token: Token):
+        """
+        Fires whenever a 401 is received and the token is successfully refreshed.
+        """
+        pass
 
     async def on_irc_message(self, message: IRCMessage):
         """
         Fires on all IRC messages, not just chat messages. Some examples
         are JOIN, PRIVMSG, and USERSTATE.
 
-        Responsible for triggering all other event callbacks.
+        Responsible for triggering all other event callbacks - if you overload
+        this function, you're taking on the responsibility of either calling this
+        function by super().on_irc_message() or handling task timeouts such as
+        successful auth responses and join responses.
         """
-        if message.command == "NOTICE" and message.body == "Login authentication failed":
-            self.close()
-        print("[!] IRC Message", message)
+        if self.debug_irc:
+            print("[!] IRC Message", message)
+
+        if message.command == '001':
+            self.resolve_future('auth')
+
+        elif message.command == 'JOIN':
+            self.resolve_future('join', message.parameters)
+
+        elif message.command == 'PRIVMSG':
+            await self.on_channel_message(ChatMessage(
+                message,
+                message.tags.get('id'),
+                message.body,
+                message.parameters[0] if message.parameters else None,
+                message.tags.get('user-id', None),
+                message.tags.get('display-name', None),
+                'broadcaster' in message.tags.get('badges', ''),
+                message.tags.get('mod', None) == '1',
+                message.tags.get('subscriber', None) == '1',
+                'staff' in message.tags.get('badges', ''),
+                message.tags.get('first-msg', None) == '1',
+                False,
+                message.tags.get('color', None),
+            ))
+
+        elif message.command == 'WHISPER':
+            await self.on_whisper(ChatMessage(
+                message,
+                message.tags.get('message-id'),
+                message.body,
+                channel=None,
+                user_id=None,
+                user_name=message.parameters[0] if message.parameters else None,
+                is_broadcaster=None,
+                is_mod=None,
+                is_subscriber=None,
+                is_staff=None,
+                is_first_message=None,
+                is_whisper=True,
+                color=None,
+            ))
 
     async def on_channel_message(self, message: ChatMessage):
         """
         Fires when a message is received in a channel that the bot is
-        subscribed to by calling bot.join()
+        subscribed to by calling join() after create()
         """
         if message.is_broadcaster:
-            print(f"[{message.channel}] (BROADCASTER) {message.user}: \"{message.text}\"")
+            print(f"[{message.channel}] (BROADCASTER) {message.user_name}: \"{message.text}\"")
         elif message.is_mod:
-            print(f"[{message.channel}] (MOD) {message.user}: \"{message.text}\"")
+            print(f"[{message.channel}] (MOD) {message.user_name}: \"{message.text}\"")
         elif message.is_subscriber:
-            print(f"[{message.channel}] (SUB) {message.user}: \"{message.text}\"")
+            print(f"[{message.channel}] (SUB) {message.user_name}: \"{message.text}\"")
         else:
-            print(f"[{message.channel}] {message.user}: \"{message.text}\"")
+            print(f"[{message.channel}] {message.user_name}: \"{message.text}\"")
+
+    async def on_whisper(self, message: ChatMessage):
+        """
+        Fires when a whisper is received. The whisper does not contain very
+        much information, the @tags mostly contain information about the
+        whisper recipient (the bot user).
+
+        The useful pieces of information are message.user_name and message.text
+
+        Note: You cannot reply to a whisper with self.reply()
+        """
+        print(f"[Whisper] {message.user_name}: \"{message.text}\"")
