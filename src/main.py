@@ -5,19 +5,14 @@ import os
 import requests
 from dataclasses import dataclass, field
 from database import db
-from functools import partial
 from pprint import pprint
-from twitchAPI import Twitch
-from twitchAPI.oauth import refresh_access_token
-from twitchAPI.types import AuthScope, ChatEvent
-from twitchAPI.chat import Chat, EventData, ChatMessage, ChatSub
+from twitchbot import TwitchBot, ChatMessage
 
-ADMINS = [admin.strip().lower() for admin in os.environ.get("ADMINS").split(",")]
+
+TWITCH_BOT_USERNAME = os.environ.get("TWITCH_BOT_USERNAME", "")
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "")
 TWITCH_SECRET = os.environ.get("TWITCH_SECRET", "")
 TWITCH_CHANNEL = os.environ.get("TWITCH_CHANNEL", "")
-TWITCH_USER_SCOPE = [AuthScope.CHAT_READ, AuthScope.CHAT_EDIT]
-
 MASTODON_URL = "https://botsin.space"
 POSSUM_EVERY_HOUR_USER_ID = 109536299782193051
 
@@ -80,99 +75,59 @@ def get_newest_possum() -> str:
     return newest_image_url
 
 
-async def main(ready_event: asyncio.Event, chat: Chat):
-    # Wait for on_ready to trigger
-    print("[!] Waiting for on_ready event")
-    await ready_event.wait()
+class PosmBot(TwitchBot):
+    def __init__(self, *args, **kwargs):
+        super.__init__(*args, **kwargs)
+        self.posm_reply_timer = Timer(10)
 
-    # Enter main loop
-    print("[!] Entering main loop")
-    while True:
-        # Sleep until just past the hour
-        current_time = datetime.datetime.now()
-        minutes_to_wait = 60 - current_time.minute
-        seconds_to_wait = (minutes_to_wait * 60) + 3
-        await asyncio.sleep(seconds_to_wait)
-        # Get the newest possum image
-        while (possum_url := get_newest_possum()) is None:
-            await asyncio.sleep(300)
-        # Send a chat message
-        await chat.send_message(
-            TWITCH_CHANNEL,
-            f"New possum just dropped! {possum_url} (via: @PossumEveryHour)"
-        )
+    async def posm_post_worker(self):
+        while True:
+            # Sleep until just past the hour
+            current_time = datetime.datetime.now()
+            minutes_to_wait = 60 - current_time.minute
+            seconds_to_wait = (minutes_to_wait * 60) + 3
+            await asyncio.sleep(seconds_to_wait)
+            # Get the newest possum image
+            while (possum_url := get_newest_possum()) is None:
+                await asyncio.sleep(300)
+            # Send a chat message
+            while True:
+                try:
+                    await self.send(
+                        TWITCH_CHANNEL,
+                        f"New possum just dropped! {possum_url} (via: @PossumEveryHour)"
+                    )
+                    break
+                except asyncio.CancelledError:
+                    return
+                except:
+                    print("[!] @PossumEveryHour send failed")
+                    await asyncio.sleep(5)
 
+    async def on_channel_message(self, message: ChatMessage):
+        await super().on_channel_message(message)
 
-async def on_ready(ready_event: asyncio.Event, loop: asyncio.AbstractEventLoop, event_data: EventData):
-    print(f'[!] Twitch Bot ready to join channel(s) {TWITCH_CHANNEL}')
-    await event_data.chat.join_room(TWITCH_CHANNEL)
-    print(f'[!] Channels joined successfully')
-    loop.call_soon_threadsafe(ready_event.set)
+        text = message.text.lower()
 
-
-posm_reply_timer = Timer(10)
-
-async def on_message(msg: ChatMessage):
-    if msg is None:
-        return
-
-    if msg.user is not None:
-        user = msg.user.name
-    else:
-        user = "<None>"
-
-    if msg.text:
-        text = msg.text
-    else:
-        text = ""
-
-    print(f'[Msg] User "{user}" said: "{text}"')
-
-    lower_text = text.lower()
-
-    # Check for ! commands
-    if user in ADMINS:
-        if lower_text.startswith("!posmtest"):
-            await msg.chat.send_message(TWITCH_CHANNEL, "rebeck6YEE")
+        # Check for ! commands
+        if text.startswith("!yee"):
+            await self.send(TWITCH_CHANNEL, "rebeck6YEE")
             return
 
-    # Check for periodic :V
-    if ("posm" in lower_text or "possum" in lower_text) and posm_reply_timer.ready:
-        await msg.chat.send_message(TWITCH_CHANNEL, ":V")
-        return
+        # Check for periodic :V
+        if ("posm" in text or "possum" in text) and self.posm_reply_timer.ready:
+            await self.send(TWITCH_CHANNEL, ":V")
 
 
-async def on_sub(sub: ChatSub):
-    print(f'[Sub] In channel')
+async def main():
+    print("[!] Starting PosmBot")
 
+    bot = await PosmBot.create(TWITCH_BOT_USERNAME, TWITCH_CLIENT_ID)
+    await bot.join(TWITCH_CHANNEL)
+    bot.add_task('posm_post', bot.posm_post_worker())
 
-async def setup():
-    print("[!] Beginning setup")
-    # Set up chat client
-    twitch = await Twitch(TWITCH_CLIENT_ID, TWITCH_SECRET)
-    token, refresh_token = await refresh_access_token(db.twitch_refresh_token, TWITCH_CLIENT_ID, TWITCH_SECRET)
-    db.twitch_refresh_token = refresh_token
-    db.save()
-    await twitch.set_user_authentication(token, TWITCH_USER_SCOPE, db.twitch_refresh_token)
-    chat = await Chat(twitch)
-    print("[!] User authentication set")
-
-    # Register event handlers
-    ready_event = asyncio.Event()
-    chat.register_event(ChatEvent.READY, partial(on_ready, ready_event, asyncio.get_running_loop()))
-    chat.register_event(ChatEvent.MESSAGE, on_message)
-    chat.register_event(ChatEvent.SUB, on_sub)
-
-    # Start the chat bot
-    chat.start()
-
-    # Run the main loop
-    try:
-        await asyncio.create_task(main(ready_event, chat))
-    finally:
-        chat.stop()
-        await twitch.close()
+    await bot.run()
 
 
 if __name__ == '__main__':
-    asyncio.run(setup())
+    asyncio.run(main())
