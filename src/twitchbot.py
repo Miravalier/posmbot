@@ -11,7 +11,7 @@ from base64 import b64encode, b64decode
 from dataclasses import dataclass
 from enum import Enum
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any, Dict, List, Set, Tuple, Union
+from typing import Any, Callable, Dict, List, Set, Tuple, Type, Union
 from urllib.parse import urlencode, parse_qs
 
 
@@ -217,6 +217,12 @@ def validate_channel(channel: str) -> str:
 
 
 @dataclass
+class Command:
+    callback: Callable[..., None]
+    parameters: List[Type]
+
+
+@dataclass
 class IRCMessage:
     tags: Dict[str,str]
     source: str
@@ -243,7 +249,8 @@ class ChatMessage:
 
 
 class TwitchBot:
-    debug_irc = False
+    log_irc = False
+    log_chat = True
     command_prefix = "!"
 
     def __init__(self, client_id: str, client_secret: str, token: Token):
@@ -259,6 +266,11 @@ class TwitchBot:
         self.scopes: List[str] = []
         self.user_id: str = None
         self.channels: Set[str] = set()
+        self.registered_commands: dict[str, Command] = {}
+
+    def register_command(self, command: str, callback: Callable[..., None]):
+        # TODO parse parameters
+        self.registered_commands[command] = Command(callback, [])
 
     def add_task(self, name: str, coro: Union[asyncio.Task, Any]) -> asyncio.Task:
         """
@@ -609,7 +621,7 @@ class TwitchBot:
         function by super().on_irc_message() or handling task timeouts such as
         successful auth responses and join responses.
         """
-        if self.debug_irc:
+        if self.log_irc:
             print("[!] IRC Message", message)
 
         if message.command == '001':
@@ -618,8 +630,17 @@ class TwitchBot:
         elif message.command == 'JOIN':
             self.resolve_future('join', message.parameters)
 
+        elif message.command == 'PING':
+            await self.irc_send(f"PONG :{message.body}")
+
+        elif message.command == 'ROOMSTATE':
+            await self.on_room_state(message.parameters[0] if message.parameters else None, message.tags)
+
+        elif message.command == 'USERNOTICE':
+            await self.on_user_notice(message.parameters[0] if message.parameters else None, message.body, message.tags)
+
         elif message.command == 'PRIVMSG':
-            await self.on_channel_message(ChatMessage(
+            await self.on_chat_message(ChatMessage(
                 message,
                 message.tags.get('id'),
                 message.body,
@@ -652,19 +673,56 @@ class TwitchBot:
                 color=None,
             ))
 
-    async def on_channel_message(self, message: ChatMessage):
+    async def on_room_state(self, channel: str, tags: Dict[str,str]):
+        """
+        Fires when the bot joins a channel or when the channel’s chat settings change.
+        """
+        pass
+
+    async def on_user_notice(self, channel: str, text: str, tags: Dict[str,str]):
+        """
+        Fires when these events occur:
+
+        - A user subscribes to the channel, re-subscribes to the channel, or gifts a
+        subscription to another user.
+
+        - Another broadcaster raids the channel.
+
+        - A viewer milestone is celebrated such as a new viewer chatting for the
+        first time.
+        """
+        pass
+
+    async def on_chat_message(self, message: ChatMessage):
         """
         Fires when a message is received in a channel that the bot is
         subscribed to by calling join() after create()
+
+        If overloaded in a subclass, super().on_chat_message() should
+        be called to dispatch and chat commands.
         """
-        if message.is_broadcaster:
-            print(f"[{message.channel}] (BROADCASTER) {message.user_name}: \"{message.text}\"")
-        elif message.is_mod:
-            print(f"[{message.channel}] (MOD) {message.user_name}: \"{message.text}\"")
-        elif message.is_subscriber:
-            print(f"[{message.channel}] (SUB) {message.user_name}: \"{message.text}\"")
-        else:
-            print(f"[{message.channel}] {message.user_name}: \"{message.text}\"")
+        if self.log_chat:
+            if message.is_broadcaster:
+                print(f"[{message.channel}] (BROADCASTER) {message.user_name}: \"{message.text}\"")
+            elif message.is_mod:
+                print(f"[{message.channel}] (MOD) {message.user_name}: \"{message.text}\"")
+            elif message.is_subscriber:
+                print(f"[{message.channel}] (SUB) {message.user_name}: \"{message.text}\"")
+            else:
+                print(f"[{message.channel}] {message.user_name}: \"{message.text}\"")
+
+        # Check if any commands need to be called
+        if not message.text.startswith(self.command_prefix):
+            return
+
+        command_name, *args = message.text.split()
+
+        command = self.registered_commands.get(command_name[len(self.command_prefix):].lower())
+        if command is None:
+            return
+
+        # TODO validate args against parameters
+        command.callback(message, *args)
 
     async def on_whisper(self, message: ChatMessage):
         """

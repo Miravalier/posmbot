@@ -109,8 +109,8 @@ class PosmBot(TwitchBot):
         db.base64_token = token.to_b64()
         db.save()
 
-    async def on_channel_message(self, message: ChatMessage):
-        await super().on_channel_message(message)
+    async def on_chat_message(self, message: ChatMessage):
+        await super().on_chat_message(message)
 
         text = message.text.lower()
 
