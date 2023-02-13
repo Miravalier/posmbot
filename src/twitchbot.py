@@ -14,7 +14,7 @@ from base64 import b64encode, b64decode
 from dataclasses import dataclass
 from enum import Enum, IntEnum
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from typing import Any, Callable, Dict, List, Set, Tuple, Type, Union
+from typing import Any, Callable, Dict, List, Set, Tuple, Union
 from urllib.parse import urlencode, parse_qs
 
 
