@@ -9,7 +9,6 @@ from pprint import pprint
 from twitchbot import TwitchBot, ChatMessage, Token, Permission
 
 
-TWITCH_BOT_USERNAME = os.environ.get("TWITCH_BOT_USERNAME", "")
 TWITCH_CLIENT_ID = os.environ.get("TWITCH_CLIENT_ID", "")
 TWITCH_SECRET = os.environ.get("TWITCH_SECRET", "")
 TWITCH_CHANNEL = os.environ.get("TWITCH_CHANNEL", "")
@@ -124,7 +123,7 @@ class PosmBot(TwitchBot):
 async def main():
     print("[!] Starting PosmBot")
 
-    bot: PosmBot = await PosmBot.create(TWITCH_BOT_USERNAME, TWITCH_CLIENT_ID, Token.from_b64(db.base64_token))
+    bot: PosmBot = await PosmBot.create(TWITCH_CLIENT_ID, TWITCH_SECRET, Token.from_b64(db.base64_token))
     await bot.join(TWITCH_CHANNEL)
     bot.add_task('posm_post', bot.posm_post_worker())
     bot.register_command('yee', bot.yee_command, Permission.MODERATOR)
