@@ -372,7 +372,9 @@ class TwitchBot:
         Finishes the future by returning the given result. Silently ignores names that do
         not exist or have already been resolved or removed.
         """
-        self.waiting_futures[name].set_result(result)
+        future = self.waiting_futures.get(name, None)
+        if future is not None and not future.done():
+            future.set_result(result)
 
     def remove_future(self, name: str):
         """
@@ -388,9 +390,8 @@ class TwitchBot:
         future = self.waiting_futures[name]
         try:
             return await asyncio.wait_for(future, timeout)
-        except asyncio.TimeoutError:
+        finally:
             self.remove_future(name)
-            raise
 
     async def validate_token(self):
         headers={"Authorization": f"OAuth {self.token.current_value}"}
