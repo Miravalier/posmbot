@@ -1,15 +1,18 @@
 import aiohttp
 import asyncio
+import functools
+import inspect
 import json
 import random
 import requests
 import secrets
+import shlex
 import threading
 import traceback
 import websockets.client as ws
 from base64 import b64encode, b64decode
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Callable, Dict, List, Set, Tuple, Type, Union
 from urllib.parse import urlencode, parse_qs
@@ -74,6 +77,13 @@ class AuthScope(str, Enum):
     CHANNEL_MANAGE_VIPS = 'channel:manage:vips'
     USER_MANAGE_WHISPERS = 'user:manage:whispers'
     MODERATOR_READ_CHATTERS = 'moderator:read:chatters'
+
+
+class Permission(IntEnum):
+    PUBLIC = 0
+    SUBSCRIBER = 1
+    MODERATOR = 2
+    BROADCASTER = 3
 
 
 class AuthError(Exception):
@@ -219,7 +229,8 @@ def validate_channel(channel: str) -> str:
 @dataclass
 class Command:
     callback: Callable[..., None]
-    parameters: List[Type]
+    parameters: List[inspect.Parameter]
+    permission: Permission
 
 
 @dataclass
@@ -247,6 +258,17 @@ class ChatMessage:
     is_whisper: bool
     color: str
 
+    @property
+    def permission(self):
+        if self.is_broadcaster:
+            return Permission.BROADCASTER
+        elif self.is_mod:
+            return Permission.MODERATOR
+        elif self.is_subscriber:
+            return Permission.SUBSCRIBER
+        else:
+            return Permission.PUBLIC
+
 
 class TwitchBot:
     log_irc = False
@@ -268,9 +290,30 @@ class TwitchBot:
         self.channels: Set[str] = set()
         self.registered_commands: dict[str, Command] = {}
 
-    def register_command(self, command: str, callback: Callable[..., None]):
-        # TODO parse parameters
-        self.registered_commands[command] = Command(callback, [])
+    def register_command(self, command: str, callback: Callable[..., None], permission: Permission = Permission.PUBLIC):
+        # Parse parameters from the callback signature
+        parameters = []
+        signature = inspect.signature(callback, follow_wrapped=True)
+        for _, parameter in signature.parameters.items():
+            # Validate only positionals are present
+            if parameter.kind == parameter.KEYWORD_ONLY:
+                raise TypeError("keyword-only parameters are not allowed on commands")
+            elif parameter.kind == parameter.VAR_POSITIONAL:
+                raise TypeError("*args parameters are not allowed on commands")
+            elif parameter.kind == parameter.VAR_KEYWORD:
+                raise TypeError("**kwargs parameters are not allowed on commands")
+            parameters.append(parameter)
+        # If the callback is non-async, wrap it in an executor
+        if inspect.iscoroutinefunction(callback):
+            command_callback = callback
+        else:
+            @functools.wraps(callback)
+            async def async_executor_wrapper(*args):
+                return await asyncio.get_running_loop().run_in_executor(
+                    None, functools.partial(callback, *args))
+            command_callback = async_executor_wrapper
+        # Put the actual values into the registered commands dict
+        self.registered_commands[command] = Command(command_callback, parameters, permission)
 
     def add_task(self, name: str, coro: Union[asyncio.Task, Any]) -> asyncio.Task:
         """
@@ -349,20 +392,7 @@ class TwitchBot:
             self.remove_future(name)
             raise
 
-    async def connect(self, timeout: float = 15.0):
-        """
-        Used internally during create() and the reconnect() handler.
-
-        Call create() instead of calling connect() directly.
-        """
-        # Cleanup old ping task
-        self.remove_task('ping')
-        self.remove_task('dispatch')
-        # Cleanup old websocket
-        if self.websocket is not None:
-            self.websocket.close()
-            self.websocket = None
-        # Validate oauth token
+    async def validate_token(self):
         headers={"Authorization": f"OAuth {self.token.current_value}"}
         async with aiohttp.ClientSession(headers=headers) as session:
             async with session.get(TWITCH_VALIDATE_URL) as response:
@@ -374,6 +404,15 @@ class TwitchBot:
         self.username = validation_data["login"]
         self.scopes = validation_data["scopes"]
         self.user_id = validation_data["user_id"]
+
+    async def connect(self, timeout: float = 15.0):
+        """
+        Used internally during create() and the reconnect() handler.
+
+        Call create() instead of calling connect() directly.
+        """
+        # Validate oauth token
+        await self.validate_token()
         print("[!] OAuth token validated.")
         # Try connection
         self.websocket = await ws.connect(TWITCH_IRC_URL)
@@ -387,6 +426,7 @@ class TwitchBot:
         # auth future's completion.
         self.add_task('ping', self.ping_worker())
         self.add_task('dispatch', self.dispatch_worker())
+        self.add_task('validate_token', self.validate_token_worker())
         # Wait for the auth success or timeout, whichever is first
         await self.wait_for_future('auth', timeout)
 
@@ -527,6 +567,15 @@ class TwitchBot:
         while True:
             await asyncio.sleep(3600)
 
+    async def validate_token_worker(self):
+        while True:
+            await asyncio.sleep(3600)
+            try:
+                await self.validate_token()
+            except:
+                print("[!] Error: token validation failed, attempting to reconnect")
+                self.add_task('reconnect', self.reconnect_worker())
+
     async def dispatch_worker(self):
         while True:
             # Try to read a packet. If we've disconnected, try to reconnect,
@@ -562,6 +611,7 @@ class TwitchBot:
                 try:
                     callback_task = self.add_nonremovable_task(self.on_irc_message(irc_message))
                     callback_task.set_name("on_irc_message")
+                    await callback_task
                 except asyncio.CancelledError:
                     return
                 except Exception:
@@ -580,26 +630,35 @@ class TwitchBot:
         wait_interval = 1
         while True:
             print("[!] Connect attempt failed. Trying again in {wait_interval} seconds.")
+            # Cleanup old tasks
+            self.remove_task('ping')
+            self.remove_task('dispatch')
+            self.remove_task('validate_token')
+            # Cleanup old websocket
+            if self.websocket is not None:
+                self.websocket.close()
+                self.websocket = None
+            # Wait for back-off interval
             await asyncio.sleep(wait_interval)
+            # Try to connect
             try:
                 await self.connect()
                 await self.join(*self.channels)
                 break
+            # On 401, refresh the token and continue
             except AuthError:
                 print("[!] Token invalid or expired, attempting to refresh")
                 try:
                     await self.token.refresh(self.client_id, self.client_secret)
                     await self.on_token_refresh(self.token)
                     continue
+                # If the refresh fails, just quit the app
                 except:
                     self.close_from_task('reconnect')
                     return
+            # On anything other than 401, back off and try again
             except:
-                if self.websocket is not None:
-                    self.websocket.close()
-                    self.websocket = None
-                if wait_interval < 256:
-                    wait_interval *= 2
+                wait_interval *= 2
 
     ###################
     # Event Callbacks #
@@ -715,14 +774,45 @@ class TwitchBot:
         if not message.text.startswith(self.command_prefix):
             return
 
-        command_name, *args = message.text.split()
+        command_name, *message_args = shlex.split(message.text)
 
         command = self.registered_commands.get(command_name[len(self.command_prefix):].lower())
         if command is None:
             return
 
-        # TODO validate args against parameters
-        command.callback(message, *args)
+        if message.permission < command.permission:
+            return
+
+        callback_args = []
+        args_consumed = 0
+        for parameter in command.parameters:
+            # ChatMessage parameters are given the current message and skipped
+            if parameter.annotation is ChatMessage:
+                callback_args.append(message)
+                continue
+            # Get the next arg from message_args, or None
+            try:
+                arg = message_args[args_consumed]
+                args_consumed += 1
+            except IndexError:
+                arg = None
+            # If arg is not present, use default value (or error if no default)
+            if arg is None:
+                if parameter.default is inspect.Parameter.empty:
+                    raise ValueError(f"missing argument to parameter '{parameter.name}' on command '{command_name}'")
+                callback_args.append(parameter.default)
+            # If arg is present, pass through type constructor
+            else:
+                if parameter.annotation is inspect.Parameter.empty:
+                    callback_args.append(arg)
+                else:
+                    callback_args.append(parameter.annotation(arg))
+
+        # Make sure no more arguments were passed than parameters on the callback
+        if args_consumed != len(message_args):
+            raise ValueError(f"command '{command_name}' received unused arguments: {message_args[args_consumed:]}")
+
+        await command.callback(*callback_args)
 
     async def on_whisper(self, message: ChatMessage):
         """

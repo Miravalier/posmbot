@@ -6,7 +6,7 @@ import requests
 from dataclasses import dataclass, field
 from database import db
 from pprint import pprint
-from twitchbot import TwitchBot, ChatMessage, Token
+from twitchbot import TwitchBot, ChatMessage, Token, Permission
 
 
 TWITCH_BOT_USERNAME = os.environ.get("TWITCH_BOT_USERNAME", "")
@@ -112,24 +112,22 @@ class PosmBot(TwitchBot):
     async def on_chat_message(self, message: ChatMessage):
         await super().on_chat_message(message)
 
-        text = message.text.lower()
-
-        # Check for ! commands
-        if text.startswith("!yee"):
-            await self.send(TWITCH_CHANNEL, "rebeck6YEE")
-            return
-
         # Check for periodic :V
-        if ("posm" in text or "possum" in text) and self.posm_reply_timer.ready:
-            await self.send(TWITCH_CHANNEL, ":V")
+        lower_text = message.text.lower()
+        if "posm" in lower_text and self.posm_reply_timer.ready:
+            await self.send(message.channel, ":V")
+
+    async def yee_command(self, message: ChatMessage):
+        await self.send(message.channel, "rebeck6YEE")
 
 
 async def main():
     print("[!] Starting PosmBot")
 
-    bot = await PosmBot.create(TWITCH_BOT_USERNAME, TWITCH_CLIENT_ID, Token.from_b64(db.base64_token))
+    bot: PosmBot = await PosmBot.create(TWITCH_BOT_USERNAME, TWITCH_CLIENT_ID, Token.from_b64(db.base64_token))
     await bot.join(TWITCH_CHANNEL)
     bot.add_task('posm_post', bot.posm_post_worker())
+    bot.register_command('yee', bot.yee_command, Permission.MODERATOR)
 
     await bot.run()
 
