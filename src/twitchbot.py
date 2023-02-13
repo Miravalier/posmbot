@@ -480,7 +480,7 @@ class TwitchBot:
         except asyncio.CancelledError:
             pass
 
-    def close(self):
+    async def close(self):
         """
         Cancel all tasks and return from run()
 
@@ -488,9 +488,11 @@ class TwitchBot:
         """
         for task in self.background_tasks:
             self.remove_task(task)
-        self.websocket.close()
+        if self.websocket != None:
+            await self.websocket.close()
+            self.websocket = None
 
-    def close_from_task(self, current_task: str):
+    async def close_from_task(self, current_task: str):
         """
         Same as close, but can be called by a background task without cancelling itself.
         """
@@ -498,7 +500,9 @@ class TwitchBot:
             if task == current_task:
                 continue
             self.remove_task(task)
-        self.websocket.close()
+        if self.websocket != None:
+            await self.websocket.close()
+            self.websocket = None
 
     async def send(self, channel: str, message: str):
         """
@@ -630,14 +634,14 @@ class TwitchBot:
     async def reconnect_worker(self):
         wait_interval = 1
         while True:
-            print("[!] Connect attempt failed. Trying again in {wait_interval} seconds.")
+            print(f"[!] Connect attempt failed. Trying again in {wait_interval} second(s)")
             # Cleanup old tasks
             self.remove_task('ping')
             self.remove_task('dispatch')
             self.remove_task('validate_token')
             # Cleanup old websocket
             if self.websocket is not None:
-                self.websocket.close()
+                await self.websocket.close()
                 self.websocket = None
             # Wait for back-off interval
             await asyncio.sleep(wait_interval)
@@ -655,7 +659,7 @@ class TwitchBot:
                     continue
                 # If the refresh fails, just quit the app
                 except:
-                    self.close_from_task('reconnect')
+                    await self.close_from_task('reconnect')
                     return
             # On anything other than 401, back off and try again
             except:
