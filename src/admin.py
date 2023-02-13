@@ -1,14 +1,19 @@
 #!/usr/bin/env python3
+"""
+Runs inside the container.
+Takes a base64 encoded token and stores it in the database.
+"""
+
 import argparse
 from database import db
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("twitch_refresh_token", type=str)
+    parser.add_argument("base64_token", type=str)
     args = parser.parse_args()
 
-    db.twitch_refresh_token = args.twitch_refresh_token
+    db.base64_token = args.base64_token
     db.save()
 
 
