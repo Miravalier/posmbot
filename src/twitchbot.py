@@ -779,7 +779,10 @@ class TwitchBot:
         if not message.text.startswith(self.command_prefix):
             return
 
-        command_name, *message_args = shlex.split(message.text)
+        try:
+            command_name, *message_args = shlex.split(message.text)
+        except ValueError:
+            command_name, *message_args = message.text.split()
 
         command = self.registered_commands.get(command_name[len(self.command_prefix):].lower())
         if command is None:
