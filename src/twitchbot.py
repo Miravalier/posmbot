@@ -528,7 +528,7 @@ class TwitchBot:
     def parse_tags(self, raw_tags: str) -> Dict[str, str]:
         tags = {}
         for tag_pair in raw_tags.split(';'):
-            key, value = tag_pair.split('=')
+            key, value = tag_pair.split('=', 1)
             tags[key] = value
         return tags
 
