@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import asyncio
 import datetime
+import json
 import os
 import requests
 from dataclasses import dataclass, field
@@ -113,11 +114,21 @@ class PosmBot(TwitchBot):
         await super().on_chat_message(message)
 
         self.log_file.write(message.to_json() + "\n")
+        self.log_file.flush()
 
         # Check for periodic :V
         lower_text = message.text.lower()
         if "posm" in lower_text and self.posm_reply_timer.ready:
             await self.send(message.channel, ":V")
+
+    async def on_message_deleted(self, message_id: str):
+        await super().on_message_deleted(message_id)
+
+        self.log_file.write(json.dumps({
+            "type": "delete",
+            "id": message_id,
+        }) + "\n")
+        self.log_file.flush()
 
     async def yee_command(self, message: ChatMessage):
         await self.send(message.channel, "rebeck6YEE")

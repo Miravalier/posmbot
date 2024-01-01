@@ -260,6 +260,7 @@ class ChatMessage:
     is_whisper: bool
     color: str
     timestamp: int
+    type: str = "message"
 
     @property
     def permission(self):
@@ -711,6 +712,9 @@ class TwitchBot:
         elif message.command == 'USERNOTICE':
             await self.on_user_notice(message.parameters[0] if message.parameters else None, message.body, message.tags)
 
+        elif message.command == 'CLEARMSG':
+            await self.on_message_deleted(message.tags.get("target-msg-id"))
+
         elif message.command == 'PRIVMSG':
             await self.on_chat_message(ChatMessage(
                 message.tags.get('id'),
@@ -764,6 +768,12 @@ class TwitchBot:
 
         - A viewer milestone is celebrated such as a new viewer chatting for the
         first time.
+        """
+        pass
+
+    async def on_message_deleted(self, message_id: str):
+        """
+        Fires when a message is deleted by a moderator.
         """
         pass
 
