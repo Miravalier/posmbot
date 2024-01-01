@@ -78,6 +78,7 @@ class PosmBot(TwitchBot):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.posm_reply_timer = Timer(10)
+        self.log_file = open("/data/chatlog", "a")
 
     async def posm_post_worker(self):
         while True:
@@ -110,6 +111,8 @@ class PosmBot(TwitchBot):
 
     async def on_chat_message(self, message: ChatMessage):
         await super().on_chat_message(message)
+
+        self.log_file.write(message.to_json() + "\n")
 
         # Check for periodic :V
         lower_text = message.text.lower()

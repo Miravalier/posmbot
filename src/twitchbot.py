@@ -11,7 +11,8 @@ import threading
 import traceback
 import websockets.client as ws
 from base64 import b64encode, b64decode
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+from datetime import datetime
 from enum import Enum, IntEnum
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Any, Callable, Dict, List, Set, Tuple, Union
@@ -82,8 +83,9 @@ class AuthScope(str, Enum):
 class Permission(IntEnum):
     PUBLIC = 0
     SUBSCRIBER = 1
-    MODERATOR = 2
-    BROADCASTER = 3
+    VIP = 2
+    MODERATOR = 3
+    BROADCASTER = 4
 
 
 class AuthError(Exception):
@@ -244,7 +246,6 @@ class IRCMessage:
 
 @dataclass
 class ChatMessage:
-    irc_message: IRCMessage
     id: str
     text: str
     channel: str
@@ -252,11 +253,13 @@ class ChatMessage:
     user_name: str
     is_broadcaster: bool
     is_mod: bool
+    is_vip: bool
     is_subscriber: bool
     is_staff: bool
     is_first_message: bool
     is_whisper: bool
     color: str
+    timestamp: int
 
     @property
     def permission(self):
@@ -264,10 +267,15 @@ class ChatMessage:
             return Permission.BROADCASTER
         elif self.is_mod:
             return Permission.MODERATOR
+        elif self.is_vip:
+            return Permission.VIP
         elif self.is_subscriber:
             return Permission.SUBSCRIBER
         else:
             return Permission.PUBLIC
+
+    def to_json(self) -> str:
+        return json.dumps({k: v for k, v in asdict(self).items() if v is not None})
 
 
 class TwitchBot:
@@ -705,7 +713,6 @@ class TwitchBot:
 
         elif message.command == 'PRIVMSG':
             await self.on_chat_message(ChatMessage(
-                message,
                 message.tags.get('id'),
                 message.body,
                 message.parameters[0] if message.parameters else None,
@@ -713,16 +720,17 @@ class TwitchBot:
                 message.tags.get('display-name', None),
                 'broadcaster' in message.tags.get('badges', ''),
                 message.tags.get('mod', None) == '1',
+                message.tags.get('vip', None) is not None,
                 message.tags.get('subscriber', None) == '1',
                 'staff' in message.tags.get('badges', ''),
                 message.tags.get('first-msg', None) == '1',
                 False,
                 message.tags.get('color', None),
+                int(datetime.now().timestamp()),
             ))
 
         elif message.command == 'WHISPER':
             await self.on_whisper(ChatMessage(
-                message,
                 message.tags.get('message-id'),
                 message.body,
                 channel=None,
@@ -730,11 +738,13 @@ class TwitchBot:
                 user_name=message.parameters[0] if message.parameters else None,
                 is_broadcaster=None,
                 is_mod=None,
+                is_vip=None,
                 is_subscriber=None,
                 is_staff=None,
                 is_first_message=None,
                 is_whisper=True,
                 color=None,
+                timestamp=int(datetime.now().timestamp()),
             ))
 
     async def on_room_state(self, channel: str, tags: Dict[str,str]):
@@ -770,6 +780,8 @@ class TwitchBot:
                 print(f"[{message.channel}] (BROADCASTER) {message.user_name}: \"{message.text}\"")
             elif message.is_mod:
                 print(f"[{message.channel}] (MOD) {message.user_name}: \"{message.text}\"")
+            elif message.is_vip:
+                print(f"[{message.channel}] (VIP) {message.user_name}: \"{message.text}\"")
             elif message.is_subscriber:
                 print(f"[{message.channel}] (SUB) {message.user_name}: \"{message.text}\"")
             else:
